@@ -16,7 +16,10 @@ import {
   X,
   Layers,
   RefreshCw,
-  FolderKanban
+  FolderKanban,
+  ExternalLink,
+  Eye,
+  Share2
 } from 'lucide-react';
 
 export default function App() {
@@ -44,11 +47,20 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
 
-  // App Data
+  // App Data & Feed Mode
+  const [feedFilter, setFeedFilter] = useState('all'); // 'all' | 'my' | 'collab'
   const [complaints, setComplaints] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // BuildWise Inter-Service Collaboration State
+  const [collabImages, setCollabImages] = useState([]);
+  const [loadingCollab, setLoadingCollab] = useState(false);
+  const [sendingToBuildwise, setSendingToBuildwise] = useState(false);
+  const [collabTicketId, setCollabTicketId] = useState('CF-COLLAB-2026');
+  const [collabStatusMsg, setCollabStatusMsg] = useState(null);
+  const collabFileInputRef = useRef(null);
 
   useEffect(() => {
     if (token) {
@@ -58,9 +70,9 @@ export default function App() {
 
   useEffect(() => {
     if (user) {
-      loadData();
+      loadData(feedFilter);
     }
-  }, [user]);
+  }, [user, feedFilter]);
 
   const fetchUserProfile = async () => {
     try {
@@ -71,7 +83,55 @@ export default function App() {
     }
   };
 
-  const loadData = async () => {
+  const loadCollabImages = async () => {
+    try {
+      setLoadingCollab(true);
+      const res = await API.get('/api/external/received-images');
+      setCollabImages(res.data.images || []);
+    } catch (err) {
+      console.warn('Failed to load collab images:', err);
+    } finally {
+      setLoadingCollab(false);
+    }
+  };
+
+  const handleSendToBuildwise = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    if (collabTicketId) formData.append('ticket_id', collabTicketId);
+
+    setSendingToBuildwise(true);
+    setCollabStatusMsg(null);
+
+    try {
+      const res = await API.post('/api/external/send-image', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setCollabStatusMsg({
+        type: 'success',
+        text: `Success! Image forwarded to BuildWise. File URL: ${res.data.file_url}`
+      });
+      await loadCollabImages();
+    } catch (err) {
+      setCollabStatusMsg({
+        type: 'error',
+        text: err.response?.data?.detail || 'Failed to forward image to BuildWise server.'
+      });
+    } finally {
+      setSendingToBuildwise(false);
+      e.target.value = '';
+    }
+  };
+
+  const loadData = async (filter = feedFilter) => {
+    if (filter === 'collab') {
+      loadCollabImages();
+      return;
+    }
+
     setLoading(true);
     try {
       try {
@@ -88,8 +148,12 @@ export default function App() {
         ]);
         setComplaints(compRes.data);
         setAnalytics(anaRes.data);
-      } else {
+      } else if (filter === 'my') {
         const compRes = await API.get('/complaints/my');
+        setComplaints(compRes.data);
+      } else {
+        // 'all' public feed - shows all municipal complaints including BuildWise partner tickets
+        const compRes = await API.get('/complaints');
         setComplaints(compRes.data);
       }
     } catch (err) {
@@ -564,27 +628,193 @@ export default function App() {
 
           {/* Incident Feed Column */}
           <div className={user.role === 'citizen' ? 'lg:col-span-7' : 'lg:col-span-12'}>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                <FolderKanban className="w-4 h-4 text-teal-400" />
-                {user.role === 'admin' ? 'City-Wide Grievance Queue' : 'My Filed Reports'}
-              </h2>
+            {/* View Mode Filters & Header */}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5 pb-3 border-b border-slate-700/60">
+              <div className="flex items-center gap-1.5 bg-slate-900/80 p-1 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setFeedFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    feedFilter === 'all'
+                      ? 'bg-teal-500 text-slate-950 font-bold shadow-sm shadow-teal-500/20'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  City Public Feed
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedFilter('my')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    feedFilter === 'my'
+                      ? 'bg-teal-500 text-slate-950 font-bold shadow-sm shadow-teal-500/20'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  My Reports
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedFilter('collab')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 ${
+                    feedFilter === 'collab'
+                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm shadow-cyan-500/20'
+                      : 'text-cyan-400 hover:text-white'
+                  }`}
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  BuildWise Hub
+                </button>
+              </div>
+
               <button
-                onClick={loadData}
+                type="button"
+                onClick={() => (feedFilter === 'collab' ? loadCollabImages() : loadData(feedFilter))}
                 className="text-xs text-slate-400 hover:text-teal-300 flex items-center gap-1.5 transition"
               >
                 <RefreshCw className="w-3.5 h-3.5" /> Refresh
               </button>
             </div>
 
-            {loading && complaints.length === 0 ? (
-              <div className="text-slate-500 text-xs text-center py-12">Querying database...</div>
-            ) : complaints.length === 0 ? (
-              <div className="border border-dashed border-slate-700/80 rounded-2xl p-12 text-center text-slate-500 text-xs">
-                No incidents reported in this scope.
+            {feedFilter === 'collab' ? (
+              <div className="space-y-4">
+                {/* Integration Status Card */}
+                <div className="bg-slate-800/40 border border-cyan-500/30 p-5 rounded-2xl">
+                  <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-cyan-300">
+                        BuildWise ↔ CivicFix REST Bridge
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-700">
+                      Live Production
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Direct multipart image forwarding & municipal grievance synchronization between BuildWise and CivicFix.
+                  </p>
+                  <div className="mt-3 text-[11px] text-slate-400 font-mono bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
+                    Target Endpoint: <span className="text-teal-300">https://buildwise-backend-ylo3.onrender.com/api/civic/upload</span>
+                  </div>
+                </div>
+
+                {/* Send Image to BuildWise Section */}
+                <div className="bg-slate-800/40 border border-slate-700/80 p-5 rounded-2xl">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 mb-3 flex items-center gap-2">
+                    <UploadCloud className="w-4 h-4 text-cyan-400" />
+                    Send Evidence Image to BuildWise
+                  </h3>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Plot / Ticket Reference:</label>
+                      <input
+                        type="text"
+                        value={collabTicketId}
+                        onChange={(e) => setCollabTicketId(e.target.value)}
+                        placeholder="e.g. CF-2026-LIVE, BW-PLOT-102"
+                        className="w-full bg-slate-900/80 border border-slate-700 text-slate-200 text-xs rounded-xl px-3 py-2 outline-none focus:border-cyan-500"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="file"
+                        ref={collabFileInputRef}
+                        accept="image/*"
+                        onChange={handleSendToBuildwise}
+                        className="hidden"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => collabFileInputRef.current?.click()}
+                        disabled={sendingToBuildwise}
+                        className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-teal-600 hover:from-cyan-400 hover:to-teal-500 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-2 transition disabled:opacity-50"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        {sendingToBuildwise ? 'Transmitting to BuildWise...' : 'Choose File & Send to BuildWise'}
+                      </button>
+                    </div>
+
+                    {collabStatusMsg && (
+                      <div
+                        className={`text-xs p-3 rounded-xl border mt-3 ${
+                          collabStatusMsg.type === 'success'
+                            ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                        }`}
+                      >
+                        {collabStatusMsg.text}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Received Images Gallery */}
+                <div className="bg-slate-800/40 border border-slate-700/80 p-5 rounded-2xl">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                      <ImageIcon className="w-4 h-4 text-teal-400" />
+                      Images Received on CivicFix ({collabImages.length})
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={loadCollabImages}
+                      className="text-xs text-slate-400 hover:text-cyan-300 flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3 h-3" /> Refresh
+                    </button>
+                  </div>
+
+                  {loadingCollab ? (
+                    <div className="text-slate-500 text-xs text-center py-8">Fetching received files...</div>
+                  ) : collabImages.length === 0 ? (
+                    <div className="border border-dashed border-slate-700/80 rounded-xl p-8 text-center text-slate-500 text-xs">
+                      No files currently in server uploads.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {collabImages.map((img) => (
+                        <div key={img.filename} className="bg-slate-900/60 border border-slate-700/80 rounded-xl overflow-hidden p-3 flex flex-col justify-between">
+                          <div className="h-32 bg-black/50 rounded-lg overflow-hidden flex items-center justify-center mb-2">
+                            <img
+                              src={img.file_url}
+                              alt={img.filename}
+                              className="h-full w-full object-cover"
+                              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                            />
+                          </div>
+                          <div className="text-[11px] font-mono text-slate-300 truncate" title={img.filename}>
+                            {img.filename}
+                          </div>
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 mt-2 pt-2 border-t border-slate-800">
+                            <span>{Math.round(img.size_bytes / 1024)} KB</span>
+                            <a
+                              href={img.file_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+                            >
+                              Open <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
-              <div className="space-y-3.5">
+              <>
+                {loading && complaints.length === 0 ? (
+                  <div className="text-slate-500 text-xs text-center py-12">Querying database...</div>
+                ) : complaints.length === 0 ? (
+                  <div className="border border-dashed border-slate-700/80 rounded-2xl p-12 text-center text-slate-500 text-xs">
+                    No incidents reported in this scope.
+                  </div>
+                ) : (
+                  <div className="space-y-3.5">
                 {complaints.map((item) => {
                   const mediaUrl = getCleanMediaUrl(item.image_url);
                   const isVideo = ['.mp4', '.mov', '.webm'].some((ext) => mediaUrl.toLowerCase().endsWith(ext));
@@ -686,6 +916,8 @@ export default function App() {
                   );
                 })}
               </div>
+            )}
+              </>
             )}
           </div>
         </div>

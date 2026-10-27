@@ -21,6 +21,7 @@ import jwt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 import auth
 from database import Base, engine, get_db
@@ -217,6 +218,48 @@ async def create_complaint(
     return new_complaint
 
 
+@app.get("/complaints", tags=["Grievances", "Public Redressal"])
+@app.get("/api/public/complaints", tags=["Public Redressal"])
+async def list_public_complaints(
+    location: Optional[str] = None,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Public city-wide complaint feed accessible by citizens, partner services (e.g. BuildWise), and municipal dashboards."""
+    stmt = select(Complaint).options(
+        selectinload(Complaint.resolution),
+        selectinload(Complaint.department)
+    )
+    if location:
+        stmt = stmt.where(Complaint.location.ilike(f"%{location}%"))
+    if status and status.lower() != "all":
+        stmt = stmt.where(Complaint.status == status)
+    if category and category.lower() != "all":
+        stmt = stmt.where(Complaint.category == category)
+    stmt = stmt.order_by(Complaint.created_at.desc())
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
+@app.get("/api/public/complaints/{ticket_id}", tags=["Public Redressal"])
+async def get_public_complaint(ticket_id: str, db: AsyncSession = Depends(get_db)):
+    """Fetch real-time complaint status and signed resolution notes by ticket ID."""
+    stmt = (
+        select(Complaint)
+        .where(Complaint.ticket_id == ticket_id)
+        .options(
+            selectinload(Complaint.resolution),
+            selectinload(Complaint.department)
+        )
+    )
+    result = await db.execute(stmt)
+    complaint = result.scalars().first()
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint ticket not found")
+    return complaint
+
+
 @app.get("/complaints/my", tags=["Grievances"])
 async def get_my_complaints(
     current_user: User = Depends(get_current_user),
@@ -225,6 +268,10 @@ async def get_my_complaints(
     result = await db.execute(
         select(Complaint)
         .where(Complaint.user_id == current_user.id)
+        .options(
+            selectinload(Complaint.resolution),
+            selectinload(Complaint.department)
+        )
         .order_by(Complaint.created_at.desc())
     )
     return result.scalars().all()
@@ -235,7 +282,14 @@ async def get_all_complaints(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Complaint).order_by(Complaint.created_at.desc()))
+    result = await db.execute(
+        select(Complaint)
+        .options(
+            selectinload(Complaint.resolution),
+            selectinload(Complaint.department)
+        )
+        .order_by(Complaint.created_at.desc())
+    )
     return result.scalars().all()
 
 
@@ -306,7 +360,10 @@ async def get_analytics(
 # INTER-SERVICE IMAGE COLLABORATION (CIVICFIX <-> BUILDWISE)
 # =========================================================================
 
-BUILDWISE_UPLOAD_URL = "https://buildwise-backend-ylo3.onrender.com/api/civic/upload"
+BUILDWISE_UPLOAD_URL = os.getenv(
+    "BUILDWISE_UPLOAD_URL",
+    "https://buildwise-backend-ylo3.onrender.com/api/civic/upload"
+).rstrip("/")
 
 
 # TASK 1: SEND IMAGE FROM CIVICFIX TO BUILDWISE
@@ -367,3 +424,28 @@ async def receive_image_from_buildwise(
         "ticket_id": ticket_id or "CF-EXTERNAL",
         "media_type": "image",
     }
+
+
+# TASK 3: LIST RECEIVED IMAGES ON CIVICFIX
+@app.get("/api/external/received-images", tags=["Inter-Service Image Collaboration"])
+async def list_received_images():
+    """Returns a list of all images received on CivicFix from BuildWise or external collaborators."""
+    if not os.path.exists("uploads"):
+        return {"images": [], "count": 0}
+
+    files = []
+    for fname in sorted(os.listdir("uploads"), reverse=True):
+        if fname.startswith("."):
+            continue
+        fpath = os.path.join("uploads", fname)
+        if os.path.isfile(fpath):
+            stat = os.stat(fpath)
+            ext = os.path.splitext(fname)[1].lower()
+            files.append({
+                "filename": fname,
+                "file_url": f"https://civicfix-t3mx.onrender.com/uploads/{fname}",
+                "size_bytes": stat.st_size,
+                "media_type": "video" if ext in {".mp4", ".mov", ".webm"} else "image",
+                "created_at": stat.st_mtime,
+            })
+    return {"images": files, "count": len(files)}

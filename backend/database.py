@@ -5,10 +5,7 @@ from sqlalchemy.orm import declarative_base
 
 load_dotenv()
 
-raw_url = os.getenv("DATABASE_URL")
-
-if not raw_url:
-    raise ValueError("DATABASE_URL is not set in .env")
+raw_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./civicfix.db")
 
 if raw_url.startswith("postgresql://"):
     db_url = raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
